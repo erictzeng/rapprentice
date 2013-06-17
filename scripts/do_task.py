@@ -104,7 +104,6 @@ def plan_follow_traj(robot, manip_name, ee_link, new_hmats, old_traj):
     
     init_traj = old_traj.copy()
     #init_traj[0] = robot.GetDOFValues(arm_inds)
-
     request = {
         "basic_info" : {
             "n_steps" : n_steps,
@@ -139,7 +138,7 @@ def plan_follow_traj(robot, manip_name, ee_link, new_hmats, old_traj):
                 "link":ee_linkname,
                 "timestep":i_step,
                 "pos_coeffs":[20,20,20],
-                "rot_coeff":[20,20,20]
+                "rot_coeffs":[20,20,20]
              }
             })
 
@@ -147,7 +146,7 @@ def plan_follow_traj(robot, manip_name, ee_link, new_hmats, old_traj):
     prob = trajoptpy.ConstructProblem(s, Globals.env) # create object that stores optimization problem
     result = trajoptpy.OptimizeProblem(prob) # do optimization
     traj = result.GetTraj()    
-        
+
     saver = openravepy.RobotStateSaver(robot)
     pos_errs = []
     for i_step in xrange(1,n_steps):
@@ -160,7 +159,6 @@ def plan_follow_traj(robot, manip_name, ee_link, new_hmats, old_traj):
     pos_errs = np.array(pos_errs)
         
     print "planned trajectory for %s. max position error: %.3f. all position errors: %s"%(manip_name, pos_errs.max(), pos_errs)
-            
     return traj         
     
 def set_gripper_maybesim(lr, value):
