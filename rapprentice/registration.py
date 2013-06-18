@@ -57,6 +57,7 @@ class Transformation(object):
         hmat_mGD = np.empty_like(hmat_mAD)
         hmat_mGD[:,:3,3] = self.transform_points(hmat_mAD[:,:3,3])
         hmat_mGD[:,:3,:3] = self.transform_bases(hmat_mAD[:,:3,3], hmat_mAD[:,:3,:3])
+        hmat_mGD[:,3,:] = np.array([0, 0, 0, 1])
         return hmat_mGD
         
     def compute_numerical_jacobian(self, x_d, epsilon=0.0001):
