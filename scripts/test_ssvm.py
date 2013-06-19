@@ -25,6 +25,16 @@ def find(tuple_list, k, cmp_fn=None):
             out.append((a, b))
     return out
 
+def join_struct_arrays(arrays):
+    sizes = np.array([a.itemsize for a in arrays])
+    offsets = np.r_[0, sizes.cumsum()]
+    n = len(arrays[0])
+    joint = np.empty((n, offsets[-1]), dtype=np.uint8)
+    for a, size, offset in zip(arrays, sizes, offsets):
+        joint[:,offset:offset+size] = a.view(np.uint8).reshape(n,size)
+    dtype = sum((a.dtype.descr for a in arrays), [])
+    return joint.ravel().view(dtype)
+
 def interp_hmat(hmat1, hmat2, frac):
     '''
     interpolate between two rigid transformations
@@ -61,6 +71,7 @@ def resample_traj(traj, target_len):
 
 CANONICAL_LEN = 50
 
+DIST_MAT_FILES = ['hist_dist_mat.pkl', 'tps_dist_mat.pkl', 'tps_t_dist_mat.pkl', 'sc_dist_mat.pkl', 'sc_t_dist_mat.pkl', 'ffinv_dist_mat.pkl']
 def load_data():
     print 'reading demo file...'
     h5file = '/media/3tb/demos/master.h5'
@@ -73,7 +84,6 @@ def load_data():
     print 'done'
 
     print 'reading distance matrices...'
-    DIST_MAT_FILES = ['hist_dist_mat.pkl', 'tps_dist_mat.pkl', 'tps_t_dist_mat.pkl', 'sc_dist_mat.pkl', 'sc_t_dist_mat.pkl', 'ffinv_dist_mat.pkl']
     dist_mats = []
     for name in DIST_MAT_FILES:
         with open('/media/3tb/demos/' + name, 'r') as f:
@@ -83,7 +93,7 @@ def load_data():
     
     return demofile, func_mat, dist_mats
 
-@mem.cache(ignore=['robot'])
+#@mem.cache(ignore=['robot'])
 def plan_follow_traj(robot, manip_name, ee_linkname, new_hmats, old_traj, eval_costs_only=False):
     n_steps = len(new_hmats)
     assert old_traj.shape[0] == n_steps
@@ -146,7 +156,7 @@ def plan_follow_traj(robot, manip_name, ee_linkname, new_hmats, old_traj, eval_c
     joint_vel_feature = find(raw_costs, 'joint_vel')[0][1] / joint_vel_coeff / n_steps
     collision_feature = sum(cost[1] for cost in find(raw_costs, None, lambda k: k.startswith('collision'))) / collision_coeff / n_steps
     pose_feature = sum(cost[1] for cost in find(raw_costs, None, lambda k: k.startswith('pose'))) / pose_coeff / n_steps
-    feature_vec = np.array([joint_vel_feature, collision_feature, pose_feature])
+    feature_vec = np.array([(-joint_vel_feature, -collision_feature, -pose_feature)], dtype=np.dtype([('joint_vel', float), ('collision', float), ('pose', float)]))
 
     if eval_costs_only:
         return feature_vec
@@ -186,17 +196,16 @@ class FeatureExtractor(object):
             init_joint_vals = seg_j["joint_states"]["position"]
             r2r = ros2rave.RosToRave(self.robot, init_joint_names)
             r2r.set_values(self.robot, init_joint_vals[0])
-            traj_costs = plan_follow_traj(self.robot, manip_name, frame, ee_traj_i, traj, eval_costs_only=True)
+            traj_features = plan_follow_traj(self.robot, manip_name, frame, ee_traj_i, traj, eval_costs_only=True)
 
-        cont_features = -traj_costs
-
+        cont_features = traj_features
         return cont_features
     
     def extract_discrete(self, i, j):
-        return self.dist_mats[:,i,j]
+        return self.dist_mats[:,i,j].astype(float).view(dtype=np.dtype([(name, float) for name in DIST_MAT_FILES]))
 
     def extract(self, traj, i, j):
-        return np.r_[self.extract_continuous(traj, i, j), self.extract_discrete(i, j)]
+        return join_struct_arrays([self.extract_continuous(traj, i, j), self.extract_discrete(i, j)]) #np.r_[self.extract_continuous(traj, i, j), self.extract_discrete(i, j)]
 
     def get_demo_traj(self, i, arm='rightarm'):
         return resample_traj(np.asarray(self.demofile[self.demo_keys[i]][arm]), CANONICAL_LEN)
@@ -234,18 +243,6 @@ class SSVM(object):
         for i in range(self.ex.get_num_features()):
             self.var_w.append(self.model.addVar(vtype=gurobipy.GRB.CONTINUOUS, name='w_%d' % i))
 
-#         # weights for features on continuous part
-#         self.dim_c = self.ex.get_num_cont_features()
-#         self.var_w_c = []
-#         for i in range(self.dim_c):
-#             self.var_w_c.append(self.model.addVar(vtype=gurobipy.GRB.CONTINUOUS, name='w_c_%d' % i))
-#         
-#         # weights for features on discrete part
-#         self.dim_d = self.ex.get_num_disc_features()
-#         self.var_w_d = []
-#         for i in range(self.dim_d):
-#             self.var_w_d.append(self.model.addVar(vtype=gurobipy.GRB.CONTINUOUS, name='w_d_%d' % i))
-        
         self.model.update()
 
     def add_traj_sample(self, traj):
@@ -256,27 +253,11 @@ class SSVM(object):
 
         for i in range(self.num_demos):
             loss = self.loss_func(traj, self.ex.get_demo_traj(i))
-#             disc_feature_sum = sum(self.ex.extract_discrete(k, i) for k in range(self.num_demos) if k != i)
-
             for j in range(self.num_demos):
-                #val = loss + dot(self.var_w_c, self.ex.extract_continuous(traj, j, i)) + dot(self.var_w_d, self.ex.extract_discrete(j, i))
                 val = loss + dot(self.var_w, self.ex.extract(traj, j, i))                
                 self.model.addConstr(self.var_slack[i] >= val)
-                
-                bar.next()
 
-#             for j in range(self.num_demos):
-#                 if j == i: continue
-#                 
-#                 val = loss
-#                 
-#                 val += dot(self.var_w_c, self.ex.extract_continuous(self.ex.get_demo_traj(i), j, i)) # TODO: cache these
-#                 val -= dot(self.var_w_c, self.ex.extract_continuous(traj, j, i))
-#                 
-#                 val += 1./(self.num_demos-1.) * dot(self.var_w_d, disc_feature_sum - self.ex.extract_discrete(j, i))
-#                 val -= dot(self.var_w_d, self.ex.extract_discrete(j, i)) # TODO: cache these
-#                 
-#                 self.model.addConstr(self.var_slack[i] >= val)
+                bar.next()
         bar.finish()
 
     def _convex_step(self, concave_ub_features):
@@ -360,9 +341,21 @@ def run_tests(extractor):
             '''demo trajectories' pose costs when registering demos to themselves should be zero'''
             for i in range(extractor.get_num_demos()):
                 features = extractor.extract_continuous(extractor.get_demo_traj(i), i, i, force_identity_reg=True)
-                self.assertTrue(features[1] < .0001) # collision cost
-                self.assertTrue(features[2] < .005)  # pose cost completely zero because of upsampling
+                self.assertTrue(features['collision'] < .0001)
+                self.assertTrue(features['pose'] < .005)  # pose cost completely zero because of upsampling
 
+        def test_blah(self):
+            pose_features = np.empty(extractor.get_num_demos())
+            for i in range(extractor.get_num_demos()):
+                for j in range(extractor.get_num_demos()):
+                    f = extractor.extract(extractor.get_demo_traj(i), i, j)
+                    pose_features[j] = f['pose']
+                self.assertTrue(np.argmax(pose_features) == i)
+                
+                for j in range(extractor.get_num_demos()):
+                    f = extractor.extract(extractor.get_demo_traj(i), j, i)
+                    pose_features[j] = f['pose']
+                self.assertTrue(np.argmax(pose_features) == i)
 
     suite = unittest.TestLoader().loadTestsFromTestCase(Tests)
     unittest.TextTestRunner(verbosity=2).run(suite)
@@ -370,6 +363,7 @@ def run_tests(extractor):
 
 def main():
     np.random.seed(0)
+    np.set_printoptions(linewidth=500)
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--test', action='store_true')
