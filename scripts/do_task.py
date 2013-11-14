@@ -435,6 +435,15 @@ def main():
                     num_perturb_points=args.sim_init_perturb_num_points)
                 Globals.exec_log(curr_step, "acquire_cloud.init_sim_rope_nodes", rope_nodes)
                 Globals.sim.create(rope_nodes)
+            elif curr_step == 2:
+                step_2_rope = Globals.sim.rope.GetNodes()
+            elif curr_step == 3:
+                import bulletsimpy
+                Globals.viewer.RemoveKinBody(Globals.env.GetKinBody('rope'))
+                print 'REMOVAL:', Globals.env.Remove(Globals.env.GetKinBody('rope'))
+                Globals.sim.bt_env.Remove(Globals.sim.bt_env.GetObjectByName('rope'))
+                Globals.sim.rope = bulletsimpy.CapsuleRope(Globals.sim.bt_env, 'rope', step_2_rope,
+                    Globals.sim.rope_params)
 
             new_xyz = Globals.sim.observe_cloud()
 
